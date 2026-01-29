@@ -1,0 +1,939 @@
+{
+  "name": "Nanny B's Bakery - Weekly Article Generator (Email Notifications)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "5ae36012-f1ac-4b7e-a4a3-862e6261cee1",
+      "name": "Weekly Schedule (Monday 8 AM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -3968,
+        112
+      ],
+      "notes": "Runs every Monday at 8:00 AM Toronto time. Generates a new weekly guide article draft for Nanny B's Bakery."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "9b83c892-f589-4885-9449-7c6eb4e7623f",
+              "name": "BAKERY_API_BASE",
+              "value": "https://nannybbakery.ca",
+              "type": "string"
+            },
+            {
+              "id": "e40df3f3-e115-4331-b18f-8af1bc1dac6c",
+              "name": "ARTICLES_ADMIN_TOKEN",
+              "value": "xyaUIFub5hnje6VWvmTKROswAXGD2E9Cfkd4opL8qNJzgQrt",
+              "type": "string"
+            },
+            {
+              "id": "a261c979-682b-4807-9374-cf4c5722a1c3",
+              "name": "BUSINESS_NAME",
+              "value": "Nanny B's Bakery",
+              "type": "string"
+            },
+            {
+              "id": "af78521e-0a5d-4f38-a76f-3932163f5ba0",
+              "name": "BUSINESS_CITY",
+              "value": "Barrie, Ontario",
+              "type": "string"
+            },
+            {
+              "id": "af78521e-0a5d-4f38-a76f-3932163f5ba1",
+              "name": "OWNER_EMAIL",
+              "value": "tammy@nannybbakery.ca",
+              "type": "string"
+            },
+            {
+              "id": "af78521e-0a5d-4f38-a76f-3932163f5ba2",
+              "name": "ADMIN_EMAIL",
+              "value": "humberto@example.com",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "f4776d45-6b36-4124-a2fc-38fcecc6e613",
+      "name": "Config – Bakery API",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        -3744,
+        112
+      ],
+      "notes": "Configuration for bakery API endpoints and authentication. Update OWNER_EMAIL with Tammy's actual email and ADMIN_EMAIL with your email."
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.BAKERY_API_BASE }}/api/menu",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "retryWithExponentialBackoff": true,
+          "numberOfRetries": 3
+        }
+      },
+      "id": "a2a13279-f796-4d2e-bdf2-b26edbfd7c58",
+      "name": "Fetch Menu (Verified Products)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -3520,
+        112
+      ],
+      "notes": "Fetches the verified menu/products from the bakery API. Added retry logic for better reliability. This is the ONLY source of truth for products. If this fails, workflow falls back to no_products mode."
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build verified products list from menu API response with caching\nconst menuResponse = $input.item.json;\nconst previousData = $input.first()?.json || {};\nconst staticData = $workflow.staticData || {};\n\n// Check if this is an error response (menu fetch failed)\nconst isError = menuResponse.error || menuResponse.statusCode >= 400 || !menuResponse;\n\nlet menuItems = [];\nlet menuSource = 'api';\nlet verifiedMenuItems = [];\nlet verifiedProductsText = '';\n\nif (!isError) {\n  // Try different possible response structures\n  if (Array.isArray(menuResponse)) {\n    menuItems = menuResponse;\n  } else if (menuResponse.data && Array.isArray(menuResponse.data)) {\n    menuItems = menuResponse.data;\n  } else if (menuResponse.items && Array.isArray(menuResponse.items)) {\n    menuItems = menuResponse.items;\n  } else if (menuResponse.menu && Array.isArray(menuResponse.menu)) {\n    menuItems = menuResponse.menu;\n  } else if (menuResponse.products && Array.isArray(menuResponse.products)) {\n    menuItems = menuResponse.products;\n  }\n  \n  // Build verified menu items array (only name, category, description)\n  verifiedMenuItems = menuItems.map(item => ({\n    name: item.name || item.title || item.productName || '',\n    category: item.category || item.type || item.group || 'Other',\n    description: item.description || item.desc || null\n  })).filter(item => item.name && item.name.trim() !== '');\n  \n  // Cache successful menu fetch\n  if (verifiedMenuItems.length > 0) {\n    $workflow.staticData = {\n      ...staticData,\n      cachedMenu: {\n        verifiedMenuItems: verifiedMenuItems,\n        cachedAt: new Date().toISOString()\n      }\n    };\n  }\n} else {\n  // Menu fetch failed - try cache\n  if (staticData.cachedMenu && staticData.cachedMenu.verifiedMenuItems) {\n    verifiedMenuItems = staticData.cachedMenu.verifiedMenuItems;\n    menuSource = 'cached';\n  }\n}\n\n// Build formatted text list if we have items\nif (verifiedMenuItems.length > 0) {\n  const groupedByCategory = {};\n  verifiedMenuItems.forEach(item => {\n    const cat = item.category || 'Other';\n    if (!groupedByCategory[cat]) {\n      groupedByCategory[cat] = [];\n    }\n    groupedByCategory[cat].push(item.name);\n  });\n  \n  verifiedProductsText = 'VERIFIED MENU ITEMS (ONLY mention these products):\\n\\n';\n  for (const [category, items] of Object.entries(groupedByCategory)) {\n    verifiedProductsText += `Category: ${category}\\n`;\n    items.forEach(item => {\n      verifiedProductsText += `- ${item}\\n`;\n    });\n    verifiedProductsText += '\\n';\n  }\n}\n\n// Set article mode\nconst articleMode = verifiedMenuItems.length > 0 ? 'product_allowed' : 'no_products';\n\nreturn {\n  json: {\n    ...previousData,\n    verifiedMenuItems: verifiedMenuItems,\n    verifiedProductsText: verifiedProductsText,\n    menuItemCount: verifiedMenuItems.length,\n    articleMode: articleMode,\n    menuSource: menuSource,\n    menuFetchFailed: isError && verifiedMenuItems.length === 0\n  }\n};"
+      },
+      "id": "edaa0b83-e7c6-4540-8007-03dca1a3e7c6",
+      "name": "Build Verified Products List",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        -3296,
+        112
+      ],
+      "notes": "Extracts verified menu items from API response. Outputs verifiedMenuItems array and formatted verifiedProductsText. Only includes name, category, and description fields."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "check-menu-exists",
+              "leftValue": "={{ $json.verifiedMenuItems && Array.isArray($json.verifiedMenuItems) && $json.verifiedMenuItems.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "bb8512bf-eb45-4115-9f6d-9cbc98e7042b",
+      "name": "Guard – Verified Menu Required",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -3088,
+        112
+      ],
+      "notes": "Guard node: Routes to product_allowed mode if menu exists, or fallback no_products mode if menu missing/empty. Both paths continue to article generation."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bd89005a-406a-451b-bfe3-304071ab84a3",
+              "name": "verifiedProductsText",
+              "value": "\"\"",
+              "type": "string"
+            },
+            {
+              "id": "bd47f68a-54b7-48a1-b789-65062d419464",
+              "name": "verifiedMenuItems",
+              "value": "[]",
+              "type": "array"
+            },
+            {
+              "id": "5392bfdc-3545-4a83-b358-35856805ba14",
+              "name": "menuItemCount",
+              "value": 0,
+              "type": "number"
+            },
+            {
+              "id": "7a4d0677-03bb-4312-854a-d9d89b889993",
+              "name": "menuFetchFailed",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "793d5958-fe20-41a1-b1c0-5cbe9bf4a00d",
+              "name": "articleMode",
+              "value": "\"no_products\"",
+              "type": "string"
+            },
+            {
+              "id": "00d16f3d-46e0-4f8d-b3c0-4f4ea9570c39",
+              "name": "items",
+              "value": "[]",
+              "type": "array"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "49850b0d-9e4d-4e83-97ef-67448122215f",
+      "name": "Set Fallback Mode (No Products)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        -3040,
+        448
+      ],
+      "notes": "Fallback when menu is unavailable AND no cached menu exists. Switches to articleMode='no_products' and clears menu/product data so article can still post safely."
+    },
+    {
+      "parameters": {
+        "functionCode": "// Merge config values from previous node with business context\nconst config = $input.item.json;\nconst articleMode = config.articleMode || 'product_allowed';\n\n// IMPORTANT: In no_products mode, do NOT list product categories in the context\nconst offerings = (articleMode === 'no_products')\n  ? \"Fresh baked goods and custom orders (menu unavailable at generation time)\"\n  : \"Custom cakes, pastries, stuffed cookies, butter tarts, cheesecake, fresh baked goods\";\n\nreturn {\n  json: {\n    ...config, // Keep all config values + menu flags\n    businessName: \"Nanny B's Bakery\",\n    city: \"Barrie, Ontario\",\n    offerings,\n    brandVoice: \"Friendly, warm, local, authentic, family-owned, community-focused\",\n    primaryKeywords: \"bakery in Barrie, custom cakes Barrie, Barrie bakery\"\n  }\n};"
+      },
+      "id": "efa1f5ec-c3f4-4164-a358-e7b4b583699f",
+      "name": "Set Business Context",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        -2864,
+        112
+      ],
+      "notes": "Sets business context variables: name, city, offerings, brand voice, and keywords. These are used throughout the workflow for content generation."
+    },
+    {
+      "parameters": {
+        "functionCode": "// Get current date for seasonal context\nconst now = new Date();\nconst month = now.getMonth(); // 0-11\nconst months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];\nconst seasons = ['winter', 'winter', 'spring', 'spring', 'spring', 'summer', 'summer', 'summer', 'fall', 'fall', 'fall', 'winter'];\n\nconst currentMonth = months[month];\nconst currentSeason = seasons[month];\n\n// Topic picker: Avoid repeating last 5 topics\n// Store recent topics in workflow static data (accessed via $workflow.staticData)\nconst staticData = $workflow.staticData || {};\nconst recentTopics = staticData.recentTopics || [];\n\n// Topic pool for bakery guides\nconst topicPool = [\n  \"The Ultimate Guide to Choosing a Custom Cake in Barrie\",\n  \"Where to Find the Best Custom Cakes in Barrie, Ontario\",\n  \"A Local's Guide to Ordering Birthday Cakes in Barrie\",\n  \"Discovering Barrie's Hidden Gem: Fresh Baked Goods and Custom Treats\",\n  \"How to Order the Perfect Custom Cake for Your Barrie Celebration\",\n  \"Barrie's Best Kept Secret: Fresh-Baked Goods and Custom Cakes\",\n  \"Everything You Need to Know About Custom Cakes in Barrie\",\n  \"A Guide to Custom Cakes and Fresh Baked Goods in Barrie, Ontario\",\n  \"Planning Your Barrie Celebration? Here's Your Cake Guide\",\n  \"Local Favorites: Why Barrie Loves This Bakery\"\n];\n\n// Filter out recent topics\nconst availableTopics = topicPool.filter(topic => !recentTopics.includes(topic));\n\n// If all topics used, reset and use all\nconst selectedTopic = availableTopics.length > 0 \n  ? availableTopics[Math.floor(Math.random() * availableTopics.length)]\n  : topicPool[Math.floor(Math.random() * topicPool.length)];\n\n// Update recent topics (keep last 5)\nconst updatedRecentTopics = [selectedTopic, ...recentTopics].slice(0, 5);\n$workflow.staticData = { ...staticData, recentTopics: updatedRecentTopics };\n\n// Get business context and config (merge from previous nodes)\nconst context = $input.item.json;\n\nreturn {\n  json: {\n    ...context,\n    currentMonth: currentMonth,\n    currentSeason: currentSeason,\n    selectedTopic: selectedTopic\n  }\n};"
+      },
+      "id": "e209bf7e-f427-4a21-93ae-fcf9471cee67",
+      "name": "Topic Picker & Seasonal Context",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        -2640,
+        112
+      ],
+      "notes": "Selects a topic from the pool, avoiding the last 5 used topics. Also adds current month and season for local context. Stores recent topics in workflow static data."
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build Conditional Prompt (FULL REPLACEMENT)\n//\n// IMPORTANT:\n// This node MUST use the business context object (not the products-only item).\n// Update the node name here if yours differs:\nconst context = $('Set Business Context').item.json;\n\n// Safe fallbacks (prevents \"undefined\" and keeps the workflow stable)\nconst articleMode = context.articleMode || 'product_allowed';\nconst businessName = context.businessName || \"Nanny B's Bakery\";\nconst city = context.city || \"Barrie, Ontario\";\nconst selectedTopic = context.selectedTopic || \"baking and community\";\nconst currentSeason = context.currentSeason || \"\";\nconst currentMonth = context.currentMonth || \"\";\nconst primaryKeywords = context.primaryKeywords || \"\";\n\n// Build the conditional prompt section\nlet promptSection = '';\n\nif (articleMode === 'product_allowed') {\n  // Product-allowed mode: include verified menu\n  promptSection = `**VERIFIED MENU ITEMS (MANDATORY - READ THIS FIRST):**\\n\\n${context.verifiedProductsText || 'No menu items available.'}\\n\\n**CRITICAL PRODUCT RULES:**\\n- You may ONLY mention products that appear verbatim in the VERIFIED MENU ITEMS above.\\n- If a product is not listed in the verified menu, DO NOT mention it.\\n- DO NOT invent, infer, or assume any products exist.\\n- DO NOT infer cuisine, heritage, or ethnicity (no Portuguese, European, etc.).\\n- Only describe what is explicitly in the verified menu list and general baking guidance.\\n- If you're unsure if a product exists, do not mention it.\\n\\n`;\n} else {\n  // No-products mode: strict prohibition\n  promptSection = `**CRITICAL: NO PRODUCTS MODE**\\n\\nYou must NOT mention any specific products or product categories. Do not reference menu items, product names, or product types.\\n\\n**STRICT PROHIBITIONS:**\\n- DO NOT mention: croissants, cookies, cakes, cupcakes, donuts/doughnuts, tarts, bread, muffins, brownies, pastries, scones, bagels, pies, or any other specific baked goods.\\n- DO NOT use phrases like \"our [product]\", \"try our [item]\", \"we offer [product]\".\\n- DO NOT list or describe specific menu items.\\n- DO NOT infer cuisine, heritage, or ethnicity (no Portuguese, European, etc.).\\n\\n**WHAT YOU CAN WRITE ABOUT:**\\n- General baking tips and advice\\n- Behind-the-scenes bakery operations\\n- Community involvement and local connections\\n- Ordering and pickup information (general)\\n- Freshness tips and storage advice (general)\\n- Seasonal baking tips (without naming specific products)\\n- Customer service and how to contact the bakery\\n- Supporting local businesses\\n\\n`;\n}\n\n// Make ALL \"custom cakes\" references conditional so no-products mode doesn't contradict itself\nconst localIntentKeywordsLine =\n  articleMode === 'product_allowed'\n    ? `- Include local intent keywords naturally: 'bakery in Barrie,' 'Barrie bakery,' 'custom cakes Barrie'`\n    : `- Include local intent keywords naturally: 'bakery in Barrie,' 'Barrie bakery'`;\n\nconst softCtaBlock =\n  articleMode === 'product_allowed'\n    ? `4. **Soft Call-to-Action**\\n   - Near the end, include a natural, helpful call-to-action\\n   - Mention ordering custom cakes for special occasions\\n   - Suggest visiting or calling ahead for specialty items\\n   - Reference the website or contact information naturally\\n   - Make it feel like friendly advice, not a sales pitch\\n   - Example tone: 'If you're planning a celebration, they do amazing custom cakes — definitely worth calling ahead to discuss what you're looking for.'\\n`\n    : `4. **Soft Call-to-Action**\\n   - Near the end, include a natural, helpful call-to-action\\n   - Encourage contacting the bakery about ordering/availability (NO product mentions)\\n   - Reference the website or contact information naturally\\n   - Make it feel like friendly advice, not a sales pitch\\n`;\n\nconst contentStructureBlock =\n  articleMode === 'product_allowed'\n    ? `**Content Structure:**\\n- Engaging introduction (2-3 paragraphs) with local hook\\n- 3-4 main sections covering different aspects:\\n  * Products and specialties (ONLY from verified menu)\\n  * Ordering/custom order process (general, no fake details)\\n  * What makes this bakery unique\\n  * Community connection\\n- FAQ section with 5-7 questions locals actually ask\\n- Conclusion with soft CTA about ordering/contacting\\n`\n    : `**Content Structure:**\\n- Engaging introduction (2-3 paragraphs) with local hook\\n- 3-4 main sections covering different aspects:\\n  * General baking guidance and tips (NO product mentions)\\n  * Behind-the-scenes bakery operations (general)\\n  * Ordering and pickup information (general)\\n  * Community connection\\n- FAQ section with 5-7 questions locals actually ask\\n- Conclusion with soft CTA about contacting the bakery\\n`;\n\n// Build base prompt\nconst basePrompt = `You are a local food writer creating a helpful guide article about ${businessName} in ${city}. Write in a natural, human tone — like you're sharing insider knowledge with a friend, not writing a corporate blog post.\n\nCRITICAL: You must return ONLY valid JSON. No markdown, no explanations, just JSON.\n\n${promptSection}\n**Writing Requirements:**\n\n1. **Human Tone (Not AI Blog Voice)**\n   - Write conversationally, like telling a friend about a great local spot\n   - Avoid phrases like 'In conclusion,' 'It's important to note,' 'Furthermore,' 'Additionally'\n   - Use contractions naturally (don't, we're, it's)\n   - Include authentic details but do NOT invent facts\n\n2. **Local Specificity (${city})**\n   - Prefer general Barrie / Simcoe County context (season, weekends, local vibe)\n   - Only mention well-known public places if relevant (e.g., downtown Barrie, Kempenfelt Bay) and keep references generic\n   - Avoid inventing specific street names, hours, awards, rankings, or fake testimonials\n   - Include seasonal context where helpful (${currentSeason} ${currentMonth})\n   ${localIntentKeywordsLine}\n\n3. **No Fake Claims**\n   - DO NOT invent awards, rankings, hours, addresses, or availability\n   - DO NOT claim \"best in Barrie\" or \"#1\" or unverifiable statements\n\n${softCtaBlock}\n${contentStructureBlock}\n**SEO Keywords to Naturally Include:**\n${primaryKeywords}\n\n**Topic Focus:** ${selectedTopic}\n\n**Output Format - STRICT JSON ONLY:**\nReturn ONLY this JSON structure:\n\n{\n  \"title\": \"Article title (max 70 characters)\",\n  \"slug\": \"url-friendly-slug-from-title\",\n  \"excerpt\": \"Article excerpt for preview (max 160 characters)\",\n  \"contentMd\": \"Full article content in Markdown format with headings, paragraphs, lists, FAQ section\",\n  \"keywords\": [\"keyword1\", \"keyword2\", \"keyword3\"],\n  \"city\": \"${city}\",\n  \"status\": \"draft\"\n}\n\nNow generate the article and return ONLY the JSON object (no markdown, no code blocks, no explanations).`;\n\n// IMPORTANT: Return the prompt on the item so downstream nodes can use it\nreturn [\n  {\n    json: {\n      ...context,\n      aiPrompt: basePrompt,\n      articleMode,\n      selectedTopic,\n      businessName,\n      city\n    }\n  }\n];\n"
+      },
+      "id": "d1d75ee0-bf1d-4bf8-a882-77289f92b862",
+      "name": "Build Conditional Prompt",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        -2416,
+        112
+      ],
+      "notes": "Builds the AI prompt conditionally based on articleMode. If product_allowed, includes verified menu restrictions. If no_products, includes strict product prohibition rules."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: \"openai/gpt-4o-mini\",\n  messages: [\n    {\n      role: \"system\",\n      content: \"Return ONLY valid JSON (no markdown, no extra text). Use double quotes for all keys and string values. No trailing commas. IMPORTANT: contentMd MUST be a single JSON string. Do NOT include literal line breaks. Use \\\\n for line breaks inside contentMd. Escape ALL newlines inside strings as \\\\n.\"\n    },\n    {\n      role: \"user\",\n      content: $json.aiPrompt\n    }\n  ],\n  temperature: 0.3,\n  max_tokens: 1000\n}) }}\n\n",
+        "options": {
+          "responseFormat": "json",
+          "allowUnauthorizedCerts": false,
+          "timeout": 30000,
+          "retryWithExponentialBackoff": true,
+          "numberOfRetries": 3
+        }
+      },
+      "id": "d8d11e58-418f-48f9-b48e-42dba41b6475",
+      "name": "Generate Article (OpenRouter)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2432,
+        -448
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ChamXFdCTkHKCw5h",
+          "name": "Header Auth account"
+        }
+      },
+      "notes": "Calls OpenRouter API to generate the weekly guide article using openai/gpt-4o-mini model. Added retry logic and extended timeout for better reliability."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Parse Article JSON — FIXED VERSION\n// Node Mode: Run Once for Each Item\n// Return: plain object\n\nconst raw =\n  $json?.choices?.[0]?.message?.content ??\n  $json?.[0]?.choices?.[0]?.message?.content ??\n  $json?.message?.content ??\n  $json?.content;\n\nif (!raw) throw new Error(\"No content returned from OpenRouter\");\n\nlet text = String(raw).trim();\n\n// Remove markdown fences if any\ntext = text.replace(/```json\\s*/gi, \"\");\ntext = text.replace(/```/g, \"\").trim();\n\n// If the model wrapped output in parentheses\ntext = text.replace(/^\\s*\\(\\s*/s, \"\").replace(/\\s*\\)\\s*$/s, \"\").trim();\n\nfunction tryJsonParse(s) {\n  return JSON.parse(s);\n}\n\nfunction repairRawNewlinesInsideStrings(s) {\n  // Convert literal newlines into \\n *only when inside JSON strings*\n  let out = \"\";\n  let inString = false;\n  let escaped = false;\n\n  for (let i = 0; i < s.length; i++) {\n    const ch = s[i];\n\n    if (inString) {\n      if (escaped) {\n        out += ch;\n        escaped = false;\n        continue;\n      }\n      if (ch === \"\\\\\") {\n        out += ch;\n        escaped = true;\n        continue;\n      }\n      if (ch === '\"') {\n        out += ch;\n        inString = false;\n        continue;\n      }\n      if (ch === \"\\n\") {\n        out += \"\\\\n\";\n        continue;\n      }\n      if (ch === \"\\r\") {\n        out += \"\\\\r\";\n        continue;\n      }\n      out += ch;\n    } else {\n      out += ch;\n      if (ch === '\"') inString = true;\n    }\n  }\n  return out;\n}\n\nfunction sliceToJsonBlock(s) {\n  const iObj = s.indexOf(\"{\");\n  const iArr = s.indexOf(\"[\");\n  if (iObj === -1 && iArr === -1) return s;\n\n  if (iObj === -1 || (iArr !== -1 && iArr < iObj)) {\n    const end = s.lastIndexOf(\"]\");\n    return end > iArr ? s.slice(iArr, end + 1) : s;\n  } else {\n    const end = s.lastIndexOf(\"}\");\n    return end > iObj ? s.slice(iObj, end + 1) : s;\n  }\n}\n\nlet parsed;\n\n// 1) First attempt: parse as-is (works if it's already JSON)\ntry {\n  parsed = tryJsonParse(sliceToJsonBlock(text));\n} catch (e1) {\n  // 2) If it looks like a quoted JSON string, parse it once to decode escapes\n  //    (your output starts with \"{\\n ...\", so this is needed)\n  try {\n    const decoded = tryJsonParse(text); // returns string OR object\n    if (typeof decoded === \"string\") {\n      // 3) Parse again to get the object\n      try {\n        parsed = tryJsonParse(decoded);\n      } catch (e2) {\n        // 4) Repair raw newlines inside strings then parse\n        parsed = tryJsonParse(repairRawNewlinesInsideStrings(decoded));\n      }\n    } else {\n      parsed = decoded;\n    }\n  } catch (e3) {\n    // 5) Last resort: slice to json block, repair newlines, parse\n    const sliced = sliceToJsonBlock(text);\n    const repaired = repairRawNewlinesInsideStrings(sliced);\n    parsed = tryJsonParse(repaired);\n  }\n}\n\n// Unwrap array if needed\nif (Array.isArray(parsed)) parsed = parsed[0];\n\n// Must be a plain object\nif (!parsed || typeof parsed !== \"object\" || Array.isArray(parsed)) {\n  throw new Error(\n    `Parsed JSON is not an object. Type=${typeof parsed}. Preview=${String(parsed).slice(0, 200)}`\n  );\n}\n\n// Validate required fields\nconst required = [\"title\", \"slug\", \"excerpt\", \"contentMd\", \"keywords\", \"city\", \"status\"];\nfor (const k of required) {\n  if (parsed[k] === undefined) throw new Error(`Missing required field: ${k}`);\n}\n\n// Normalize keywords\nif (!Array.isArray(parsed.keywords)) {\n  parsed.keywords =\n    typeof parsed.keywords === \"string\"\n      ? parsed.keywords.split(\",\").map(x => x.trim()).filter(Boolean)\n      : [];\n}\n\n// Normalize strings\nparsed.title = String(parsed.title).trim();\nparsed.slug = String(parsed.slug).trim();\nparsed.excerpt = String(parsed.excerpt).trim();\nparsed.contentMd = String(parsed.contentMd);\nparsed.city = String(parsed.city).trim();\nparsed.status = String(parsed.status).trim();\n\n// ✅ For \"Run Once for Each Item\", return the object directly\nreturn parsed;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2192,
+        -448
+      ],
+      "id": "eb2566cb-8ff0-46c0-8acd-66c23e401153",
+      "name": "Parse Article JSON"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Validate no_products mode: check for product category words\nconst articleData = $input.item.json;\n\n// IMPORTANT: read articleMode from upstream workflow data (not the article itself)\nconst articleMode =\n  articleData.articleMode ||\n  articleData.topicMode ||\n  articleData.mode ||\n  'product_allowed';\n\n// Only validate if in no_products mode\nif (articleMode !== 'no_products') {\n  return [{\n    json: {\n      ...articleData,\n      articleMode,\n      noProductsValidationPassed: true\n    }\n  }];\n}\n\n// Product category words to check for (case-insensitive)\nconst productCategories = [\n  'croissant', 'cookie', 'cake', 'cupcake', 'donut', 'doughnut',\n  'tart', 'bread', 'muffin', 'brownie', 'pastry', 'pastries',\n  'scone', 'bagel', 'pie', 'pies', 'cheesecake', 'churro',\n  'churros', 'biscuit', 'biscuits', 'pretzel', 'pretzels'\n];\n\n// Combine all text fields to check\nconst textToCheck = [\n  articleData.title || '',\n  articleData.excerpt || '',\n  articleData.contentMd || '',\n  (articleData.keywords || []).join(' ')\n].join(' ').toLowerCase();\n\n// Check for product category words\nconst foundProducts = [];\nfor (const product of productCategories) {\n  const regex = new RegExp(`\\\\b${product}\\\\b`, 'i');\n  if (regex.test(textToCheck)) foundProducts.push(product);\n}\n\nif (foundProducts.length > 0) {\n  return [{\n    json: {\n      ...articleData,\n      articleMode,\n      noProductsValidationPassed: false,\n      noProductsValidationFailed: true,\n      foundProducts,\n      errorMessage: `Product category words detected in no_products mode: ${foundProducts.join(', ')}. Article must not mention any products.`,\n      retryCount: (articleData.retryCount || 0) + 1\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...articleData,\n    articleMode,\n    noProductsValidationPassed: true\n  }\n}];\n"
+      },
+      "id": "0f256aba-4da9-4238-9ddc-d5eef731dde9",
+      "name": "Validate No Products Mode",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        -1952,
+        -480
+      ],
+      "notes": "Validates that no_products mode articles contain zero product category words. Checks for common product terms. Returns validationFailed flag if products detected."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "check-validation",
+              "leftValue": "={{ $json.validationPassed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d20a98a6-f0ef-4850-af0f-60ed00bbe3f6",
+      "name": "Check Validation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1664,
+        -464
+      ],
+      "notes": "Checks if article validation passed. Routes to banned-term check if valid, or Error Handler if validation failed. Also checks for no_products validation failures and routes to retry if needed."
+    },
+    {
+      "parameters": {
+        "functionCode": "// Check for banned terms (cuisine/heritage inference)\nconst articleData = $input.item.json;\nconst bannedTerms = ['portuguese', 'portugal', 'natas', 'pastel', 'lisbon', 'european bakery', 'custard tart'];\n\n// Combine all text fields to check\nconst textToCheck = [\n  articleData.title || '',\n  articleData.excerpt || '',\n  articleData.contentMd || '',\n  (articleData.keywords || []).join(' ')\n].join(' ').toLowerCase();\n\n// Check for banned terms\nconst foundBannedTerms = [];\nfor (const term of bannedTerms) {\n  if (textToCheck.includes(term.toLowerCase())) {\n    foundBannedTerms.push(term);\n  }\n}\n\nif (foundBannedTerms.length > 0) {\n  return {\n    json: {\n      ...articleData,\n      bannedTermCheckFailed: true,\n      bannedTermsFound: foundBannedTerms,\n      errorMessage: `Banned terms detected: ${foundBannedTerms.join(', ')}. Article contains inferred cuisine/heritage. Refusing to post.`\n    }\n  };\n}\n\nreturn {\n  json: {\n    ...articleData,\n    bannedTermCheckPassed: true\n  }\n};"
+      },
+      "id": "1e81addd-76d3-4d96-8179-6d83b01eebdc",
+      "name": "Check Banned Terms",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        -1744,
+        -144
+      ],
+      "notes": "Validates that article does not contain banned terms (Portuguese, European, etc.). Routes to Error Handler if banned terms found. Prevents posting articles with inferred cuisine/heritage."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "check-banned-terms-passed",
+              "leftValue": "={{ $json.bannedTermCheckPassed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "0878ca9b-859b-403f-a654-641b70dabf37",
+      "name": "Guard – Banned Terms Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1568,
+        -144
+      ],
+      "notes": "Guard node: If banned terms found, route to Error Handler. Prevents posting articles with inferred cuisine/heritage."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.BAKERY_API_BASE }}/api/articles",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-admin-token",
+              "value": "={{ $json.ARTICLES_ADMIN_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"title\": \"{{ $json.title }}\",\n  \"slug\": \"{{ $json.slug }}\",\n  \"excerpt\": \"{{ $json.excerpt }}\",\n  \"content\": \"{{ $json.contentMd }}\",\n  \"keywords\": {{ JSON.stringify($json.keywords) }},\n  \"city\": \"{{ $json.city }}\",\n  \"status\": \"{{ $json.status }}\",\n  \"metaDescription\": \"{{ $json.metaDescription || $json.excerpt }}\"\n}",
+        "options": {
+          "timeout": 30000,
+          "retryWithExponentialBackoff": true,
+          "numberOfRetries": 3
+        }
+      },
+      "id": "fdd9c47e-d04b-4e9c-a9b5-6b36cc2dbe85",
+      "name": "POST Article to API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -992,
+        80
+      ],
+      "notes": "POSTs the generated article to the bakery API as a draft. Added retry logic for reliability."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-success",
+              "leftValue": "={{ $json.statusCode || $json.status }}",
+              "rightValue": 201,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2b7fb268-cd7d-4138-8d7f-e01c3fe88e27",
+      "name": "Check API Response",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -672,
+        -64
+      ],
+      "notes": "Checks if article was created successfully (HTTP 201). Routes to success notification or error handling."
+    },
+    {
+      "parameters": {
+        "authentication": "smtp",
+        "sender": {
+          "name": "Daberto Assistant",
+          "email": "humbertobizes@gmail.com"
+        },
+        "receivers": {
+          "to": [
+            {
+              "email": "={{ $json.OWNER_EMAIL }}"
+            }
+          ]
+        },
+        "subject": "Nanny B's Bakery - New Article Ready for Review",
+        "text": "=Hi Tammy,\n\nA new article has been automatically created for Nanny B's Bakery website:\n\nTitle: {{ $json.title }}\nSummary: {{ $json.excerpt }}\nKeywords: {{ $json.keywords.join(', ') }}\n\nThe article is currently saved as a draft. Please log into the website \nadmin dashboard to review and publish when ready.\n\nThis is an automated message from the content generation system.\n\nBest regards,\nDaberto",
+        "html": "=<div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e9e9e9; border-radius: 5px;\">\n  <h2 style=\"color: #c87c5d; margin-bottom: 20px;\">New Article Ready for Review</h2>\n  \n  <p>Hi Tammy,</p>\n  \n  <p>A new article has been automatically created for Nanny B's Bakery website:</p>\n  \n  <div style=\"background-color: #f9f5f1; padding: 15px; border-radius: 5px; margin: 20px 0;\">\n    <p><strong>Title:</strong> {{ $json.title }}</p>\n    <p><strong>Summary:</strong> {{ $json.excerpt }}</p>\n    <p><strong>Keywords:</strong> {{ $json.keywords.join(', ') }}</p>\n  </div>\n  \n  <p>The article is currently saved as a <strong>draft</strong>. Please log into the website \n  admin dashboard to review and publish when ready.</p>\n  \n  <p style=\"font-size: 0.9em; color: #888; margin-top: 30px;\">This is an automated message from the content generation system.</p>\n  \n  <p style=\"margin-top: 20px;\">Best regards,<br>Daberto</p>\n</div>"
+      },
+      "id": "6f71d6a4-9909-41ee-b30a-4ff6c80a7ab5",
+      "name": "Send Success Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        -432,
+        -160
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "DabertoGmailSMTP",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "eb5e6f2c-cd56-430d-8a18-550e02856a17",
+              "name": "ok",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "fe46b89a-d98f-40ec-aaed-249f24bb619a",
+              "name": "errorStage",
+              "value": "={{ $json.errorStage || $json.stage || \"unknown_stage\" }}",
+              "type": "string"
+            },
+            {
+              "id": "cff0024e-f977-4365-9cec-affebb3fed3c",
+              "name": "errorMessage",
+              "value": "={{ $json.errorMessage || $json.message || $json.error || \"Unknown error\" }}",
+              "type": "string"
+            },
+            {
+              "id": "9402e4ce-6852-462e-b438-8014c63d8712",
+              "name": "articleTitle",
+              "value": "={{ $json.title || $json.article?.title || \"N/A\" }}",
+              "type": "string"
+            },
+            {
+              "id": "13c2ed6c-5cf4-415f-99c2-051db9d3ee33",
+              "name": "slug",
+              "value": "={{ $json.slug || $json.article?.slug || \"N/A\" }}",
+              "type": "string"
+            },
+            {
+              "id": "b9f71325-0e0a-4224-969b-bd63f2cfe08e",
+              "name": "contentSnippet",
+              "value": "={{ ($json.contentMd || $json.article?.contentMd || \"\").slice(0, 300) }}",
+              "type": "string"
+            },
+            {
+              "id": "987ba840-c22e-4f8a-b6c7-acf562ca2ab8",
+              "name": "timestamp",
+              "value": "={{ new Date().toISOString() }}",
+              "type": "string"
+            },
+            {
+              "id": "3107f69d-e138-4ad6-9813-444218bf0ec8",
+              "name": "nodeThatFailed",
+              "value": "=Error Handler\n",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "7c7f905d-582b-47c8-8992-2559af800daf",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        -432,
+        480
+      ],
+      "notes": "Captures error information when article creation fails. Logs error for debugging and can trigger error notifications."
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build Retry Prompt (Strict) - FULL REPLACEMENT\n//\n// Goal:\n// - Increment retryCount reliably\n// - Create shouldStop to prevent infinite loops\n// - Rebuild aiPrompt using the same conditional rules as before, but stricter about fixes\n\nconst context = $input.item.json;\n\n// Hard defaults\nconst maxRetries = Number(context.maxRetries ?? 3);\nconst nextRetryCount = Number(context.retryCount ?? 0) + 1;\nconst shouldStop = nextRetryCount >= maxRetries;\n\n// Ensure topic/business/city never go undefined\nconst businessName = context.businessName || \"Nanny B's Bakery\";\nconst city = context.city || \"Barrie, Ontario\";\nconst selectedTopic = context.selectedTopic || \"baking and community\";\n\n// Build the strict retry instructions based on what failed\n// You can tweak these messages depending on your validators.\nconst failureNotes = [];\nif (context.noProductsValidationPassed === false) {\n  failureNotes.push(\"- Your last output violated product restrictions. Fix it.\");\n}\nif (context.bannedTermsFound && Array.isArray(context.bannedTermsFound) && context.bannedTermsFound.length) {\n  failureNotes.push(`- Banned terms found: ${context.bannedTermsFound.join(', ')}`);\n}\nif (!failureNotes.length) {\n  failureNotes.push(\"- Your last output failed validation. Fix it precisely and try again.\");\n}\n\nconst strictRetryHeader = `You are retrying because the previous output FAILED validation.\n\nRETRY RULES:\n- Return ONLY valid JSON (no markdown, no explanations)\n- Fix ONLY what failed\n- Do NOT invent facts, awards, hours, addresses, reviews\n- Keep it local to ${city}\n- Topic focus: ${selectedTopic}\n\nVALIDATION FAIL NOTES:\n${failureNotes.join('\\n')}\n`;\n\n// Reuse the existing aiPrompt if present, but prepend strict retry header.\n// If aiPrompt is missing, we create a minimal safe prompt (so it never becomes undefined).\nconst basePrompt = context.aiPrompt\n  ? `${strictRetryHeader}\\n\\nORIGINAL INSTRUCTIONS (follow these too):\\n\\n${context.aiPrompt}`\n  : `${strictRetryHeader}\\n\\nWrite a helpful local guide article about ${businessName} in ${city}. Return ONLY the required JSON fields.`;\n\n// Return updated fields\nreturn [\n  {\n    json: {\n      ...context,\n      aiPrompt: basePrompt,\n      isRetry: true,\n      retryCount: nextRetryCount,\n      maxRetries,\n      shouldStop\n    }\n  }\n];\n"
+      },
+      "id": "dc8f1703-1ca1-4c73-8d1c-585942874c31",
+      "name": "Build Retry Prompt (Stricter)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        -1216,
+        -384
+      ],
+      "notes": "Builds a stricter prompt for retry when no_products validation failed. Prohibits all product category words explicitly."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "30d63390-11e7-4792-9e71-2b408829d6ef",
+              "leftValue": "={{$json.noProductsValidationPassed}}",
+              "rightValue": "false",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "bedf3733-2291-4c05-9368-3e735cceaa75",
+              "leftValue": "={{$json.shouldStop}}",
+              "rightValue": "false",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -944,
+        -352
+      ],
+      "id": "99e3a250-ed4a-41f6-89a6-0df554995114",
+      "name": "Retry Decision"
+    },
+    {
+      "parameters": {
+        "authentication": "smtp",
+        "sender": {
+          "name": "Daberto Assistant",
+          "email": "humbertobizes@gmail.com" 
+        },
+        "receivers": {
+          "to": [
+            {
+              "email": "={{ $json.OWNER_EMAIL }}"
+            }
+          ],
+          "cc": [
+            {
+              "email": "={{ $json.ADMIN_EMAIL }}"
+            }
+          ]
+        },
+        "subject": "Nanny B's Bakery - Content Generation Alert",
+        "text": "=Hi Tammy,\n\nThere was an issue with the automatic article generation for Nanny B's Bakery.\n\nThe system attempted to create a new article but encountered an error.\nTechnical support has been notified and will resolve the issue.\n\nYou don't need to take any action at this time.\n\nThis is an automated message from the content generation system.\n\nBest regards,\nDaberto",
+        "html": "=<div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e9e9e9; border-radius: 5px;\">\n  <h2 style=\"color: #d35b5b; margin-bottom: 20px;\">Content Generation Alert</h2>\n  \n  <p>Hi Tammy,</p>\n  \n  <p>There was an issue with the automatic article generation for Nanny B's Bakery.</p>\n  \n  <div style=\"background-color: #f9f2f2; padding: 15px; border-radius: 5px; margin: 20px 0;\">\n    <p>The system attempted to create a new article but encountered an error.<br>\n    Technical support has been notified and will resolve the issue.</p>\n  </div>\n  \n  <p><strong>You don't need to take any action at this time.</strong></p>\n  \n  <p style=\"font-size: 0.9em; color: #888; margin-top: 30px;\">This is an automated message from the content generation system.</p>\n  \n  <p style=\"margin-top: 20px;\">Best regards,<br>Daberto</p>\n</div>"
+      },
+      "id": "42e5c05e-1f89-47ee-a96d-aa9cc58d1aeb",
+      "name": "Send Error Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        480
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "DabertoGmailSMTP",
+          "name": "SMTP account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Weekly Schedule (Monday 8 AM)": {
+      "main": [
+        [
+          {
+            "node": "Config – Bakery API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config – Bakery API": {
+      "main": [
+        [
+          {
+            "node": "Fetch Menu (Verified Products)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Menu (Verified Products)": {
+      "main": [
+        [
+          {
+            "node": "Build Verified Products List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Verified Products List": {
+      "main": [
+        [
+          {
+            "node": "Guard – Verified Menu Required",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guard – Verified Menu Required": {
+      "main": [
+        [
+          {
+            "node": "Set Business Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set Fallback Mode (No Products)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Fallback Mode (No Products)": {
+      "main": [
+        [
+          {
+            "node": "Set Business Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Business Context": {
+      "main": [
+        [
+          {
+            "node": "Topic Picker & Seasonal Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Topic Picker & Seasonal Context": {
+      "main": [
+        [
+          {
+            "node": "Build Conditional Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Conditional Prompt": {
+      "main": [
+        [
+          {
+            "node": "Generate Article (OpenRouter)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Article (OpenRouter)": {
+      "main": [
+        [
+          {
+            "node": "Parse Article JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Validation": {
+      "main": [
+        [
+          {
+            "node": "Check Banned Terms",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Retry Prompt (Stricter)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Banned Terms": {
+      "main": [
+        [
+          {
+            "node": "Guard – Banned Terms Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guard – Banned Terms Check": {
+      "main": [
+        [
+          {
+            "node": "POST Article to API",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Retry Prompt (Stricter)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST Article to API": {
+      "main": [
+        [
+          {
+            "node": "Check API Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check API Response": {
+      "main": [
+        [
+          {
+            "node": "Send Success Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate No Products Mode": {
+      "main": [
+        [
+          {
+            "node": "Check Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Retry Prompt (Stricter)": {
+      "main": [
+        [
+          {
+            "node": "Retry Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Article JSON": {
+      "main": [
+        [
+          {
+            "node": "Validate No Products Mode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Send Error Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Decision": {
+      "main": [
+        [
+          {
+            "node": "Generate Article (OpenRouter)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "email-notifications-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "42fcd5eb321ed4abcdff4cf08a830cda0570b5e67bbb5d35fcc5fef253856644"
+  },
+  "tags": []
+}

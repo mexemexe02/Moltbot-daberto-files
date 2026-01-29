@@ -1,0 +1,94 @@
+{
+  "name": "Nanny B's Bakery - Essential Improvements",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "trigger-node",
+      "name": "Weekly Schedule (Monday 8 AM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "timeout": 30000,
+          "retryWithExponentialBackoff": true,
+          "numberOfRetries": 3
+        }
+      },
+      "name": "HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -600,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$credentials.telegramApi.accessToken}}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $credentials.telegramApi.chatId }}"
+            },
+            {
+              "name": "text",
+              "value": "=🧁 Nanny's Bakery Article Generator\n\n✅ SUCCESS: New article created!\n\nTitle: {{ $json.title }}\nSlug: {{ $json.slug }}\nKeywords: {{ $json.keywords.join(', ') }}"
+            }
+          ]
+        }
+      },
+      "name": "Success Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -400,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Weekly Schedule (Monday 8 AM)": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Success Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
